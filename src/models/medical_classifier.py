@@ -80,7 +80,7 @@ class MedicalImageClassifier:
     
     def predict_single(self, image_array: np.ndarray) -> Dict:
         """
-        Predict single image classification using CNN features
+        Predict single image classification using improved medical detection
         """
         start_time = time.time()
         
@@ -89,8 +89,8 @@ class MedicalImageClassifier:
                 # Fallback to random prediction if model not loaded
                 prediction = np.array([0.5, 0.5])
             else:
-                # Use CNN feature-based classification
-                prediction = self._feature_based_prediction(image_array)
+                # Use improved medical classification
+                prediction = self._improved_medical_detection(image_array)
             
             # Get predicted class and confidence
             predicted_class = np.argmax(prediction)
@@ -122,10 +122,9 @@ class MedicalImageClassifier:
                 'error': str(e)
             }
     
-    def _feature_based_prediction(self, image_array: np.ndarray) -> np.ndarray:
+    def _improved_medical_detection(self, image_array: np.ndarray) -> np.ndarray:
         """
-        CNN feature-based prediction using EfficientNet features
-        This provides more intelligent classification than simple heuristics
+        Improved medical image detection based on actual medical image characteristics
         """
         try:
             # Add batch dimension if needed
@@ -145,127 +144,191 @@ class MedicalImageClassifier:
             # Convert to numpy
             feature_vector = pooled_features.numpy().flatten()
             
-            # Medical image classification based on CNN features
-            medical_score = self._classify_by_features(feature_vector)
+            # Advanced medical image detection
+            medical_score = self._detect_medical_patterns(image_array, feature_vector)
             non_medical_score = 1.0 - medical_score
             
             return np.array([non_medical_score, medical_score])
             
         except Exception as e:
-            print(f"Error in feature-based prediction: {str(e)}")
-            # Fallback to improved heuristic
-            return self._improved_heuristic_prediction(image_array)
+            print(f"Error in improved detection: {str(e)}")
+            # Fallback to heuristic
+            return self._heuristic_medical_detection(image_array)
     
-    def _classify_by_features(self, feature_vector: np.ndarray) -> float:
+    def _detect_medical_patterns(self, image_array: np.ndarray, feature_vector: np.ndarray) -> float:
         """
-        Classify based on CNN features extracted from EfficientNet
+        Detect medical patterns using both CNN features and image analysis
         """
-        # This uses patterns learned from ImageNet that correlate with medical images
+        medical_score = 0.0
         
-        # Calculate feature statistics
+        # Convert normalized image back for analysis
+        if len(image_array.shape) == 3 and image_array.shape[2] == 3:
+            # Denormalize from ImageNet preprocessing
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            denorm_image = (image_array * std) + mean
+        else:
+            denorm_image = image_array
+        
+        denorm_image = np.clip(denorm_image, 0, 1)
+        img_255 = (denorm_image * 255).astype(np.uint8)
+        
+        # 1. Grayscale characteristics (X-rays, CT scans are often grayscale)
+        if len(img_255.shape) == 3:
+            r, g, b = img_255[:,:,0], img_255[:,:,1], img_255[:,:,2]
+            # Check if channels are similar (grayscale-like)
+            rgb_diff = np.mean([np.std(r-g), np.std(g-b), np.std(r-b)])
+            if rgb_diff < 20:  # Very similar channels = grayscale
+                medical_score += 0.3
+            elif rgb_diff < 40:  # Somewhat similar
+                medical_score += 0.15
+        
+        # 2. Intensity distribution analysis
+        if len(img_255.shape) == 3:
+            gray = np.mean(img_255, axis=2)
+        else:
+            gray = img_255
+        
+        # Medical images often have specific intensity distributions
+        hist, bins = np.histogram(gray.flatten(), bins=50, range=(0, 255))
+        hist_normalized = hist / np.sum(hist)
+        
+        # Check for bimodal distribution (common in medical images)
+        peaks = []
+        for i in range(1, len(hist_normalized)-1):
+            if hist_normalized[i] > hist_normalized[i-1] and hist_normalized[i] > hist_normalized[i+1]:
+                if hist_normalized[i] > 0.02:  # Significant peak
+                    peaks.append(i)
+        
+        if len(peaks) >= 2:
+            medical_score += 0.25  # Bimodal distribution
+        
+        # 3. Edge characteristics (medical images have distinct edges)
+        edges_h = np.abs(np.diff(gray.astype(float), axis=0))
+        edges_v = np.abs(np.diff(gray.astype(float), axis=1))
+        edge_strength = np.mean(edges_h) + np.mean(edges_v)
+        
+        if 10 < edge_strength < 50:  # Medical images have moderate edge strength
+            medical_score += 0.2
+        elif edge_strength > 50:  # Very high edge strength
+            medical_score += 0.1
+        
+        # 4. Contrast analysis
+        contrast = np.std(gray)
+        if 30 < contrast < 80:  # Medical images often have good contrast
+            medical_score += 0.15
+        
+        # 5. Dark background detection (common in X-rays, MRIs)
+        border_pixels = np.concatenate([
+            gray[0:5, :].flatten(),
+            gray[-5:, :].flatten(),
+            gray[:, 0:5].flatten(),
+            gray[:, -5:].flatten()
+        ])
+        border_mean = np.mean(border_pixels)
+        
+        if border_mean < 50:  # Dark background
+            medical_score += 0.2
+        elif border_mean < 100:  # Somewhat dark
+            medical_score += 0.1
+        
+        # 6. CNN feature analysis for medical patterns
         feature_mean = np.mean(feature_vector)
         feature_std = np.std(feature_vector)
-        feature_max = np.max(feature_vector)
-        feature_sparsity = np.sum(feature_vector == 0) / len(feature_vector)
+        feature_sparsity = np.sum(feature_vector < 0.1) / len(feature_vector)
         
-        medical_indicators = 0.0
+        # Medical images often activate specific CNN patterns
+        if 0.3 < feature_sparsity < 0.7:  # Moderate sparsity
+            medical_score += 0.15
         
-        # Medical images often activate different feature patterns
-        # These thresholds are based on typical CNN feature distributions
+        if feature_std > np.mean(feature_vector):  # High variation in features
+            medical_score += 0.1
         
-        # High feature sparsity (common in medical scans)
-        if feature_sparsity > 0.3:
-            medical_indicators += 0.25
-            
-        # Lower mean activation (medical images often have distinct patterns)
-        if feature_mean < 0.5:
-            medical_indicators += 0.2
-            
-        # Higher standard deviation (medical images have more varied features)
-        if feature_std > 1.0:
-            medical_indicators += 0.2
-            
-        # Check for specific feature patterns that correlate with medical content
-        # (These are learned patterns from ImageNet that transfer to medical domain)
-        if feature_max > 3.0 and feature_mean < 1.0:
-            medical_indicators += 0.15
-            
-        # Analyze feature distribution shape
-        feature_percentiles = np.percentile(feature_vector, [25, 50, 75])
-        if feature_percentiles[2] - feature_percentiles[0] > 2.0:  # High IQR
-            medical_indicators += 0.1
-            
-        # Add some randomization to make it more realistic
-        noise = np.random.normal(0, 0.1)
-        medical_score = np.clip(medical_indicators + noise, 0.1, 0.9)
+        # 7. Texture analysis
+        # Simple texture measure using local standard deviation
+        kernel_size = 5
+        h, w = gray.shape
+        texture_map = np.zeros_like(gray, dtype=float)
+        
+        for i in range(kernel_size//2, h - kernel_size//2):
+            for j in range(kernel_size//2, w - kernel_size//2):
+                patch = gray[i-kernel_size//2:i+kernel_size//2+1, 
+                           j-kernel_size//2:j+kernel_size//2+1]
+                texture_map[i, j] = np.std(patch)
+        
+        texture_variance = np.var(texture_map)
+        if texture_variance > 100:  # High texture variation
+            medical_score += 0.1
+        
+        # 8. Aspect ratio and size considerations
+        aspect_ratio = gray.shape[1] / gray.shape[0]
+        if 0.8 < aspect_ratio < 1.2:  # Square-ish (common for medical scans)
+            medical_score += 0.05
+        
+        # Ensure score is in reasonable range
+        medical_score = np.clip(medical_score, 0.1, 0.9)
         
         return medical_score
     
-    def _improved_heuristic_prediction(self, image_array: np.ndarray) -> np.ndarray:
+    def _heuristic_medical_detection(self, image_array: np.ndarray) -> np.ndarray:
         """
-        Improved heuristic-based prediction with better balance
+        Fallback heuristic-based medical detection
         """
         try:
-            # Note: image_array is already normalized with ImageNet mean/std
-            # Convert back to 0-1 range for analysis
-            mean = np.array([0.485, 0.456, 0.406])
-            std = np.array([0.229, 0.224, 0.225])
+            # Convert to 0-255 range for analysis
+            if len(image_array.shape) == 3 and image_array.shape[2] == 3:
+                mean = np.array([0.485, 0.456, 0.406])
+                std = np.array([0.229, 0.224, 0.225])
+                denorm_image = (image_array * std) + mean
+            else:
+                denorm_image = image_array
             
-            # Denormalize
-            denorm_image = (image_array * std) + mean
             denorm_image = np.clip(denorm_image, 0, 1)
-            
-            # Convert to 0-255 for traditional image analysis
             img_255 = (denorm_image * 255).astype(np.uint8)
             
-            # Calculate image characteristics
-            mean_intensity = np.mean(img_255)
-            std_intensity = np.std(img_255)
-            
-            medical_score = 0.3  # Start with neutral base
-            
-            # Medical image characteristics
-            
-            # 1. Grayscale tendency (many medical images are grayscale)
             if len(img_255.shape) == 3:
-                r, g, b = img_255[:,:,0], img_255[:,:,1], img_255[:,:,2]
-                color_variance = np.var([np.mean(r), np.mean(g), np.mean(b)])
-                if color_variance < 100:  # Low color variance = more grayscale
-                    medical_score += 0.2
+                gray = np.mean(img_255, axis=2)
+            else:
+                gray = img_255
             
-            # 2. Contrast patterns (medical images often have specific contrast)
-            if std_intensity > 40:  # Good contrast
-                medical_score += 0.15
+            medical_score = 0.2  # Start with low base
             
-            # 3. Dark background (common in X-rays, MRIs)
-            border_mean = np.mean([
-                np.mean(img_255[0:10, :]),    # Top border
-                np.mean(img_255[-10:, :]),    # Bottom border
-                np.mean(img_255[:, 0:10]),    # Left border
-                np.mean(img_255[:, -10:])     # Right border
-            ])
-            if border_mean < 80:  # Dark borders
+            # Simple checks for medical image characteristics
+            mean_intensity = np.mean(gray)
+            std_intensity = np.std(gray)
+            
+            # Dark images with good contrast (X-rays)
+            if mean_intensity < 100 and std_intensity > 30:
+                medical_score += 0.4
+            
+            # Moderate brightness with high contrast (CT/MRI)
+            elif 80 < mean_intensity < 150 and std_intensity > 40:
+                medical_score += 0.35
+            
+            # Check for circular/oval structures (common in medical scans)
+            edges = np.abs(np.gradient(gray.astype(float)))
+            edge_magnitude = np.sqrt(edges[0]**2 + edges[1]**2)
+            
+            if np.mean(edge_magnitude) > 15:
                 medical_score += 0.2
             
-            # 4. Overall brightness patterns
-            if 60 < mean_intensity < 180:  # Typical medical image range
-                medical_score += 0.15
-            elif mean_intensity < 60:  # Very dark (X-rays)
-                medical_score += 0.25
+            # Grayscale check
+            if len(img_255.shape) == 3:
+                color_variance = np.var([np.mean(img_255[:,:,0]), 
+                                       np.mean(img_255[:,:,1]), 
+                                       np.mean(img_255[:,:,2])])
+                if color_variance < 100:
+                    medical_score += 0.15
             
-            # Add controlled randomization for variety
-            randomization = np.random.uniform(-0.15, 0.15)
-            medical_score = np.clip(medical_score + randomization, 0.05, 0.95)
-            
+            medical_score = np.clip(medical_score, 0.1, 0.9)
             non_medical_score = 1.0 - medical_score
             
             return np.array([non_medical_score, medical_score])
             
         except Exception as e:
-            print(f"Error in improved heuristic: {str(e)}")
-            # Random prediction as last resort
-            medical_prob = np.random.uniform(0.2, 0.8)
-            return np.array([1.0 - medical_prob, medical_prob])
+            print(f"Error in heuristic detection: {str(e)}")
+            # Balanced fallback
+            return np.array([0.5, 0.5])
     
     def predict_batch(self, images: List[np.ndarray]) -> List[Dict]:
         """
