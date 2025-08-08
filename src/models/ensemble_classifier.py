@@ -7,9 +7,8 @@ from .genai_classifier import GenAIClassifier
 class EnsembleClassifier:
     """
     Ensemble classifier combining multiple approaches:
-    1. Classical ML (feature extraction + traditional classifiers)
-    2. Deep Learning (EfficientNet transfer learning)
-    3. GenAI (CLIP-like zero-shot classification)
+    1. Deep Learning (EfficientNet transfer learning)  
+    2. GenAI (CLIP-like zero-shot classification)
     """
     
     def __init__(self, weights=None):
@@ -17,12 +16,11 @@ class EnsembleClassifier:
         self.deep_learning_model = MedicalImageClassifier(model_type='efficientnet')
         self.genai_model = GenAIClassifier()
         
-        # Ensemble weights (can be tuned based on validation performance)
+        # Balanced ensemble weights for better medical detection
         if weights is None:
             self.weights = {
-                'deep_learning': 0.5,  # Primary model
-                'genai': 0.3,          # Secondary model  
-                'heuristic': 0.2       # Fallback model
+                'deep_learning': 0.6,  # Primary model with medical detection
+                'genai': 0.4           # Secondary model for context
             }
         else:
             self.weights = weights
@@ -34,7 +32,7 @@ class EnsembleClassifier:
     
     def predict_single(self, image_array: np.ndarray) -> Dict:
         """
-        Ensemble prediction combining all three approaches
+        Ensemble prediction combining both approaches with improved medical detection
         """
         start_time = time.time()
         individual_results = {}
@@ -55,15 +53,24 @@ class EnsembleClassifier:
             genai_medical_prob = genai_result['probabilities']['medical']
             genai_non_medical_prob = genai_result['probabilities']['non-medical']
             
-            # 4. Weighted ensemble combination
+            # 4. Enhanced ensemble combination with confidence weighting
+            dl_confidence = dl_result['confidence']
+            genai_confidence = genai_result['confidence']
+            
+            # Adjust weights based on individual confidence scores
+            confidence_adjusted_weights = self._adjust_weights_by_confidence(
+                dl_confidence, genai_confidence
+            )
+            
+            # Weighted ensemble combination
             ensemble_medical_prob = (
-                self.weights['deep_learning'] * dl_medical_prob +
-                self.weights['genai'] * genai_medical_prob
+                confidence_adjusted_weights['deep_learning'] * dl_medical_prob +
+                confidence_adjusted_weights['genai'] * genai_medical_prob
             )
             
             ensemble_non_medical_prob = (
-                self.weights['deep_learning'] * dl_non_medical_prob +
-                self.weights['genai'] * genai_non_medical_prob
+                confidence_adjusted_weights['deep_learning'] * dl_non_medical_prob +
+                confidence_adjusted_weights['genai'] * genai_non_medical_prob
             )
             
             # Normalize probabilities
@@ -75,7 +82,20 @@ class EnsembleClassifier:
                 ensemble_medical_prob = 0.5
                 ensemble_non_medical_prob = 0.5
             
-            # 5. Final prediction and confidence
+            # 5. Apply ensemble boost for medical detection
+            # If both models somewhat agree on medical, boost the confidence
+            if (dl_result['prediction'] == 'medical' and genai_result['prediction'] == 'medical'):
+                ensemble_medical_prob = min(0.95, ensemble_medical_prob * 1.1)
+                ensemble_non_medical_prob = 1.0 - ensemble_medical_prob
+            elif (dl_result['prediction'] == 'medical' or genai_result['prediction'] == 'medical'):
+                # If one model is confident about medical, give it more weight
+                if dl_result['prediction'] == 'medical' and dl_confidence > 0.7:
+                    ensemble_medical_prob = min(0.9, ensemble_medical_prob * 1.05)
+                elif genai_result['prediction'] == 'medical' and genai_confidence > 0.7:
+                    ensemble_medical_prob = min(0.9, ensemble_medical_prob * 1.05)
+                ensemble_non_medical_prob = 1.0 - ensemble_medical_prob
+            
+            # 6. Final prediction and confidence
             if ensemble_medical_prob > ensemble_non_medical_prob:
                 prediction = 'medical'
                 confidence = ensemble_medical_prob
@@ -83,7 +103,7 @@ class EnsembleClassifier:
                 prediction = 'non-medical'
                 confidence = ensemble_non_medical_prob
             
-            # 6. Agreement analysis
+            # 7. Agreement analysis
             dl_pred = dl_result['prediction']
             genai_pred = genai_result['prediction']
             
@@ -113,7 +133,8 @@ class EnsembleClassifier:
                     }
                 },
                 'agreement_score': agreement_score,
-                'ensemble_weights': self.weights
+                'ensemble_weights': self.weights,
+                'confidence_adjusted_weights': confidence_adjusted_weights
             }
             
         except Exception as e:
@@ -126,6 +147,41 @@ class EnsembleClassifier:
                 'method': 'ensemble',
                 'error': str(e)
             }
+    
+    def _adjust_weights_by_confidence(self, dl_confidence: float, genai_confidence: float) -> Dict:
+        """
+        Adjust ensemble weights based on individual model confidence scores
+        """
+        base_weights = self.weights.copy()
+        
+        # If one model is much more confident, increase its weight
+        confidence_diff = abs(dl_confidence - genai_confidence)
+        
+        if confidence_diff > 0.3:  # Significant confidence difference
+            if dl_confidence > genai_confidence:
+                # Deep learning model is more confident
+                adjustment = min(0.2, confidence_diff * 0.5)
+                adjusted_weights = {
+                    'deep_learning': min(0.8, base_weights['deep_learning'] + adjustment),
+                    'genai': max(0.2, base_weights['genai'] - adjustment)
+                }
+            else:
+                # GenAI model is more confident
+                adjustment = min(0.2, confidence_diff * 0.5)
+                adjusted_weights = {
+                    'deep_learning': max(0.2, base_weights['deep_learning'] - adjustment),
+                    'genai': min(0.8, base_weights['genai'] + adjustment)
+                }
+        else:
+            # Similar confidence, use base weights
+            adjusted_weights = base_weights
+        
+        # Ensure weights sum to 1
+        total_weight = sum(adjusted_weights.values())
+        if total_weight > 0:
+            adjusted_weights = {k: v/total_weight for k, v in adjusted_weights.items()}
+        
+        return adjusted_weights
     
     def _calculate_agreement(self, predictions: List[str]) -> float:
         """
@@ -194,7 +250,7 @@ class EnsembleClassifier:
             },
             'weights': self.weights,
             'is_ready': self.is_ready,
-            'ensemble_strategy': 'weighted_average'
+            'ensemble_strategy': 'confidence_weighted_average'
         }
     
     def analyze_prediction_confidence(self, image_array: np.ndarray) -> Dict:
