@@ -109,70 +109,116 @@ class MedicalImageClassifier:
             # Start neutral
             medical_score = 0.5
             
-            # 1. GRAYSCALE CHECK (Most important medical indicator)
+            # 1. COLOR ANALYSIS - Most important discriminator
             if len(img_255.shape) == 3:
                 r, g, b = img_255[:,:,0], img_255[:,:,1], img_255[:,:,2]
                 
-                # Calculate how similar RGB channels are
+                # Calculate color variance across the entire image
                 r_mean, g_mean, b_mean = np.mean(r), np.mean(g), np.mean(b)
+                r_std, g_std, b_std = np.std(r), np.std(g), np.std(b)
+                
+                # Color channel difference
                 channel_diff = max(abs(r_mean - g_mean), abs(g_mean - b_mean), abs(r_mean - b_mean))
                 
-                if channel_diff < 5:  # Very grayscale = likely medical
-                    medical_score = 0.8
-                elif channel_diff < 15:  # Somewhat grayscale = possibly medical
-                    medical_score = 0.65
-                elif channel_diff > 50:  # Very colorful = likely not medical
-                    medical_score = 0.2
-                else:  # Moderately colorful = likely not medical
-                    medical_score = 0.35
+                # Color standard deviation difference  
+                color_std_diff = max(abs(r_std - g_std), abs(g_std - b_std), abs(r_std - b_std))
+                
+                # Combined color analysis
+                if channel_diff < 10 and color_std_diff < 15:  # Very grayscale
+                    medical_score = 0.75
+                elif channel_diff < 25 and color_std_diff < 30:  # Somewhat grayscale
+                    medical_score = 0.6
+                elif channel_diff > 40 or color_std_diff > 50:  # Very colorful = NOT medical
+                    medical_score = 0.25
+                else:  # Moderate color = likely NOT medical
+                    medical_score = 0.4
                 
                 gray = np.mean(img_255, axis=2).astype(np.uint8)
             else:
-                # Already grayscale = medical indicator
-                medical_score = 0.7
+                # Already grayscale = potential medical indicator
+                medical_score = 0.6
                 gray = img_255.astype(np.uint8)
             
-            # 2. BACKGROUND CHECK (Medical images often have dark backgrounds)
+            # 2. DETAILED BACKGROUND ANALYSIS
             h, w = gray.shape
-            border_size = min(h, w) // 20
-            border_size = max(1, border_size)
+            border_size = max(5, min(h, w) // 15)
             
-            # Sample border pixels
             try:
-                top_border = gray[:border_size, :].flatten()
-                bottom_border = gray[-border_size:, :].flatten()
-                left_border = gray[:, :border_size].flatten()
-                right_border = gray[:, -border_size:].flatten()
+                # Get border pixels
+                top_border = gray[:border_size, :]
+                bottom_border = gray[-border_size:, :]
+                left_border = gray[:, :border_size]
+                right_border = gray[:, -border_size:]
                 
-                border_pixels = np.concatenate([top_border, bottom_border, left_border, right_border])
+                border_pixels = np.concatenate([
+                    top_border.flatten(), 
+                    bottom_border.flatten(),
+                    left_border.flatten(), 
+                    right_border.flatten()
+                ])
+                
                 border_mean = np.mean(border_pixels)
+                border_std = np.std(border_pixels)
                 
-                # Dark border adjustment
-                if border_mean < 40:  # Very dark border = medical boost
+                # Medical images typically have dark, uniform backgrounds
+                if border_mean < 50 and border_std < 25:  # Dark uniform background
+                    medical_score = min(medical_score + 0.2, 0.9)
+                elif border_mean < 30:  # Very dark background
                     medical_score = min(medical_score + 0.15, 0.9)
-                elif border_mean > 150:  # Bright border = non-medical boost
+                elif border_mean > 150 and border_std > 40:  # Bright varied background = natural
+                    medical_score = max(medical_score - 0.25, 0.1)
+                elif border_mean > 100:  # Generally bright background
                     medical_score = max(medical_score - 0.15, 0.1)
+                    
             except:
-                pass  # Skip if border analysis fails
+                pass
             
-            # 3. BRIGHTNESS CHECK (Medical images often darker overall)
-            mean_brightness = np.mean(gray)
+            # 3. OVERALL BRIGHTNESS AND CONTRAST
+            overall_mean = np.mean(gray)
+            overall_contrast = np.std(gray)
             
-            if mean_brightness < 80:  # Dark image = medical boost
-                medical_score = min(medical_score + 0.1, 0.9)
-            elif mean_brightness > 180:  # Bright image = non-medical boost
-                medical_score = max(medical_score - 0.1, 0.1)
+            # Medical images often have specific brightness ranges
+            if overall_mean < 100:  # Darker images
+                if overall_contrast > 30:  # Good contrast in dark image = medical
+                    medical_score = min(medical_score + 0.1, 0.9)
+                else:
+                    medical_score = min(medical_score + 0.05, 0.9)
+            elif overall_mean > 150:  # Brighter images = often natural
+                medical_score = max(medical_score - 0.15, 0.1)
             
-            # 4. CONTRAST CHECK (Medical images have specific contrast ranges)
-            contrast = np.std(gray)
-            
-            if 20 < contrast < 60:  # Medical contrast range
+            # Very high contrast = natural scenes
+            if overall_contrast > 80:
+                medical_score = max(medical_score - 0.2, 0.1)
+            elif overall_contrast < 20:  # Very low contrast = possibly medical
                 medical_score = min(medical_score + 0.05, 0.9)
-            elif contrast > 100:  # Very high contrast = natural scene
-                medical_score = max(medical_score - 0.1, 0.1)
             
-            # Final bounds
-            medical_score = np.clip(medical_score, 0.1, 0.9)
+            # 4. TEXTURE ANALYSIS - Simple version
+            try:
+                # Calculate local variation
+                kernel_size = 5
+                if h > kernel_size and w > kernel_size:
+                    texture_values = []
+                    step_size = max(kernel_size, min(h, w) // 10)
+                    
+                    for i in range(0, h - kernel_size, step_size):
+                        for j in range(0, w - kernel_size, step_size):
+                            patch = gray[i:i+kernel_size, j:j+kernel_size]
+                            texture_values.append(np.std(patch))
+                    
+                    if texture_values:
+                        avg_texture = np.mean(texture_values)
+                        
+                        # Very high texture = natural scenes
+                        if avg_texture > 60:
+                            medical_score = max(medical_score - 0.15, 0.1)
+                        # Very low texture = possibly medical
+                        elif avg_texture < 20:
+                            medical_score = min(medical_score + 0.05, 0.9)
+            except:
+                pass
+            
+            # Final adjustment and bounds
+            medical_score = np.clip(medical_score, 0.05, 0.95)
             
             return medical_score
             
